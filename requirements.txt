@@ -1,0 +1,4 @@
+colorama==0.4.6
+keyring==25.7.0
+requests==2.32.5
+tyro==1.0.8
