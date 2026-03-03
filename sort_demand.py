@@ -13,11 +13,15 @@ from __future__ import annotations
 import collections
 import dataclasses
 import datetime
+import pathlib
+import re
 import sys
 import threading
 import time
 
 import keyring
+import openpyxl
+import openpyxl.styles
 import requests
 import tyro
 from colorama import Fore, Style, init
@@ -594,6 +598,83 @@ def _print_verify(before: dict, after: dict) -> bool:
     return count_ok and qty_ok and sum_ok and order_ok and not (missing or extra or changed)
 
 
+# ── XLSX Export ───────────────────────────────────────────────────
+
+_OUTPUT_DIR = pathlib.Path("output")
+
+
+def _sanitize_filename(name: str) -> str:
+    """Убираем символы, запрещённые в именах файлов Windows/Linux."""
+    return re.sub(r'[\\/:*?"<>|]', "_", name).strip()
+
+
+def _extract_barcodes(assortment: dict) -> tuple[str, str]:
+    """Вернуть (code128, ean13) из поля barcodes ассортимента."""
+    code128 = ""
+    ean13 = ""
+    for entry in assortment.get("barcodes") or []:
+        if not isinstance(entry, dict):
+            continue
+        if "code128" in entry:
+            code128 = str(entry["code128"])
+        elif "ean13" in entry:
+            ean13 = str(entry["ean13"])
+    return code128, ean13
+
+
+def save_xlsx(sorted_positions: list[dict], demand_name: str) -> pathlib.Path:
+    """
+    Сохранить отсортированные позиции в xlsx.
+
+    Колонки: Артикул, Code128, EAN13, Кол-во, Ячейка
+    Позиции НЕ суммируются — каждая строка == одна позиция.
+    """
+    _OUTPUT_DIR.mkdir(exist_ok=True)
+    safe_name = _sanitize_filename(demand_name)
+    out_path = _OUTPUT_DIR / f"{safe_name}.xlsx"
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Позиции"
+
+    # Заголовок
+    headers = ["Артикул", "Code128", "EAN13", "Кол-во", "Ячейка"]
+    header_fill = openpyxl.styles.PatternFill("solid", fgColor="1F4E79")
+    header_font = openpyxl.styles.Font(color="FFFFFF", bold=True)
+    header_align = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+
+    for col, title in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=title)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_align
+
+    ws.row_dimensions[1].height = 18
+
+    # Строки — одна позиция == одна строка
+    for row_idx, pos in enumerate(sorted_positions, 2):
+        assortment = pos.get("assortment") or {}
+        code = assortment.get("code", "")
+        code128, ean13 = _extract_barcodes(assortment)
+        qty = pos.get("quantity", 0)
+        cell_name = pos.get("_cell", "")
+
+        ws.cell(row=row_idx, column=1, value=code)
+        ws.cell(row=row_idx, column=2, value=code128)
+        ws.cell(row=row_idx, column=3, value=ean13)
+        ws.cell(row=row_idx, column=4, value=int(qty) if float(qty) == int(qty) else qty)
+        ws.cell(row=row_idx, column=5, value=cell_name)
+
+    # автоширина колонок
+    col_widths = [14, 20, 16, 8, 14]
+    col_letters = ["A", "B", "C", "D", "E"]
+    for letter, width in zip(col_letters, col_widths):
+        ws.column_dimensions[letter].width = width
+
+    wb.save(out_path)
+    return out_path
+
+
 # ── Display ───────────────────────────────────────────────────────────────────
 
 
@@ -765,6 +846,10 @@ def main(config: AppConfig) -> None:  # noqa: D401
         positions, key=lambda p: sort_key(p.get("_cell", ""))
     )
     print_positions_table(sorted_positions)
+
+    # 5b. Сохранить в xlsx
+    xlsx_path = save_xlsx(sorted_positions, demand_name)
+    print(f"{Fore.GREEN}✓ Сохранено: {xlsx_path}{Style.RESET_ALL}")
 
     # 6. Применить в МойСклад
     # --config.apply = автоподтверждение; без флага — всегда спрашиваем
