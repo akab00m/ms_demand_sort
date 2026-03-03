@@ -847,48 +847,57 @@ def main(config: AppConfig) -> None:  # noqa: D401
     )
     print_positions_table(sorted_positions)
 
-    # 5b. Сохранить в xlsx
-    xlsx_path = save_xlsx(sorted_positions, demand_name)
-    print(f"{Fore.GREEN}✓ Сохранено: {xlsx_path}{Style.RESET_ALL}")
-
-    # 6. Применить в МойСклад
-    # --config.apply = автоподтверждение; без флага — всегда спрашиваем
+    # 6. Меню действий
+    # --config.apply = автовыбор «2» (сортировка + документ)
     if config.apply:
-        confirm = "y"
+        action = 2
     else:
-        try:
-            confirm = input(
-                f"\n{Fore.YELLOW}Сохранить порядок в МойСклад? [y/N]: {Style.RESET_ALL}"
-            ).strip().lower()
-        except EOFError:
-            confirm = "n"
+        print(
+            f"\n{Fore.CYAN}Выберите действие:{Style.RESET_ALL}\n"
+            f"  {Fore.WHITE}1{Style.RESET_ALL} — применить сортировку в МойСклад\n"
+            f"  {Fore.WHITE}2{Style.RESET_ALL} — применить сортировку + сохранить xlsx\n"
+            f"  {Fore.WHITE}3{Style.RESET_ALL} — только сохранить xlsx (без изменений в МойСклад)\n"
+            f"  {Fore.WHITE}0{Style.RESET_ALL} — отмена"
+        )
+        action = 0
+        while True:
+            try:
+                raw = input(
+                    f"{Fore.YELLOW}Ваш выбор [0–3]: {Style.RESET_ALL}"
+                ).strip()
+                action = int(raw)
+            except (ValueError, EOFError):
+                print(f"{Fore.RED}Введите 0, 1, 2 или 3.{Style.RESET_ALL}")
+                continue
+            if action in (0, 1, 2, 3):
+                break
+            print(f"{Fore.RED}Введите 0, 1, 2 или 3.{Style.RESET_ALL}")
 
-    if confirm == "y":
-        # Снапшот ДО сохранения
+    if action == 0:
+        print("Отменено.")
+
+    # Применить сортировку в МойСклад
+    if action in (1, 2):
         before_snap = _make_snapshot(sorted_positions)
-
         print("Применяю сортировку…")
         apply_sort_to_demand(client, demand_id, sorted_positions, debug=config.debug)
 
-        # Снапшот ПОСЛЕ: читаем позиции заново из АПИ
         print("  Сверка данных…")
         after_positions = fetch_positions(
             client, demand_id, config.cell_attr, debug=False
         )
         after_snap = _make_snapshot(after_positions)
-
         ok = _print_verify(before_snap, after_snap)
 
         if ok:
-            print(
-                f"\n{Fore.GREEN}✓ Порядок обновлён. Данные совпали.{Style.RESET_ALL}"
-            )
+            print(f"\n{Fore.GREEN}✓ Порядок обновлён. Данные совпали.{Style.RESET_ALL}")
         else:
-            print(
-                f"\n{Fore.RED}✗ ВНИМАНИЕ: несоответствие данных после сохранения!{Style.RESET_ALL}"
-            )
-    else:
-        print("Отменено.")
+            print(f"\n{Fore.RED}✗ ВНИМАНИЕ: несоответствие данных после сохранения!{Style.RESET_ALL}")
+
+    # Сохранить xlsx
+    if action in (2, 3):
+        xlsx_path = save_xlsx(sorted_positions, demand_name)
+        print(f"{Fore.GREEN}✓ Сохранено: {xlsx_path}{Style.RESET_ALL}")
 
     # Пауза перед выходом — только в интерактивном режиме
     if not config.apply:
