@@ -1,0 +1,18 @@
+# Нормализованные line endings для всех текстовых файлов
+* text=auto
+
+# Python — LF в репозитории
+*.py text eol=lf
+
+# Markdown, конфиги — LF
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+VERSION text eol=lf
+
+# Бинарные файлы — без изменений
+*.png binary
+*.jpg binary
+*.ico binary
