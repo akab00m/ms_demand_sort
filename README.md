@@ -1,7 +1,5 @@
 # sort_demand
 
-[![GitHub](https://img.shields.io/badge/GitHub-akab00m%2Fms__demand__sort-blue?logo=github)](https://github.com/akab00m/ms_demand_sort)
-
 Утилита для сортировки позиций отгрузки в **МойСклад** по ячейкам склада.
 
 ## Зачем
