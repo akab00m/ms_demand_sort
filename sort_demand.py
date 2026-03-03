@@ -594,52 +594,86 @@ def _print_verify(before: dict, after: dict) -> bool:
     return count_ok and qty_ok and sum_ok and order_ok and not (missing or extra or changed)
 
 
-# ── Display ────────────────────────────────────────────────────────────────────────────
-
-_BORDER = "─"
-
-
-def _hr(width: int = 78) -> None:
-    print(_BORDER * width)
+# ── Display ───────────────────────────────────────────────────────────────────
 
 
 def print_demands_table(demands: list[dict]) -> None:
+    # Собираем строки
+    rows = []
+    for i, d in enumerate(demands, 1):
+        rows.append((
+            str(i),
+            d.get("moment", "")[:10],
+            d.get("name", "—"),
+            (d.get("agent") or {}).get("name", "—"),
+            (d.get("state") or {}).get("name", "—"),
+        ))
+
+    # Динамическая ширина колонок (с ограничением максимума)
+    wn  = max(len("№"),          max(len(r[0]) for r in rows))
+    wd  = max(len("Дата"),       max(len(r[1]) for r in rows))
+    wno = min(max(len("Номер"),  max(len(r[2]) for r in rows)), 18)
+    wa  = min(max(len("Контрагент"), max(len(r[3]) for r in rows)), 38)
+    ws  = max(len("Статус"),     max(len(r[4]) for r in rows))
+
+    sep = "  "
+    total = wn + wd + wno + wa + ws + len(sep) * 4
+
     header = (
-        f"{'№':<4} {'Дата':<12} {'Номер':<16} "
-        f"{'Контрагент':<32} {'Статус'}"
+        f"{'№':>{wn}}{sep}{'Дата':<{wd}}{sep}{'Номер':<{wno}}{sep}"
+        f"{'Контрагент':<{wa}}{sep}{'Статус':<{ws}}"
     )
     print(f"\n{Fore.CYAN}{header}{Style.RESET_ALL}")
-    _hr()
-    for i, d in enumerate(demands, 1):
-        moment = d.get("moment", "")[:10]
-        name = d.get("name", "—")
-        agent_name = (d.get("agent") or {}).get("name", "—")[:30]
-        state_name = (d.get("state") or {}).get("name", "—")
+    print("─" * total)
+
+    for num, date, name, agent, state in rows:
         print(
-            f"{Fore.WHITE}{i:<4}{Style.RESET_ALL}"
-            f" {moment:<12} {name:<16} {agent_name:<32} {state_name}"
+            f"{Fore.WHITE}{num:>{wn}}{Style.RESET_ALL}{sep}"
+            f"{date:<{wd}}{sep}"
+            f"{name[:wno]:<{wno}}{sep}"
+            f"{agent[:wa]:<{wa}}{sep}"
+            f"{state}"
         )
 
 
 def print_positions_table(sorted_positions: list[dict]) -> None:
+    # Собираем строки
+    rows = []
+    for i, pos in enumerate(sorted_positions, 1):
+        name = (pos.get("assortment") or {}).get("name", "—")
+        qty  = pos.get("quantity", 0)
+        cell = pos.get("_cell", "")
+        rows.append((str(i), cell, name, qty))
+
+    # Динамическая ширина
+    wn  = max(len("№"),           max(len(r[0]) for r in rows))
+    wc  = min(max(len("Ячейка"),  max(len(r[1]) for r in rows)), 16)
+    wna = min(max(len("Наименование"), max(len(r[2]) for r in rows)), 52)
+    wq  = max(len("Кол-во"),      max(len(f"{r[3]:.0f}") for r in rows))
+
+    sep   = "  "
+    total = wn + wc + wna + wq + len(sep) * 3
+
     header = (
-        f"{'№':<4} {'Ячейка':<14} {'Наименование':<46} {'Кол-во':>7}"
+        f"{'№':>{wn}}{sep}{'Ячейка':<{wc}}{sep}"
+        f"{'Наименование':<{wna}}{sep}{'Кол-во':>{wq}}"
     )
     print(f"\n{Fore.CYAN}{header}{Style.RESET_ALL}")
-    _hr()
+    print("─" * total)
 
-    for i, pos in enumerate(sorted_positions, 1):
-        assortment = pos.get("assortment", {})
-        product_name = assortment.get("name", "—")[:44]
-        qty = pos.get("quantity", 0)
-        cell = pos.get("_cell", "")
-
+    for num, cell, name, qty in rows:
+        cell_pad = f"{cell[:wc]:<{wc}}"
         if cell:
-            cell_str = f"{Fore.YELLOW}{cell:<14}{Style.RESET_ALL}"
+            cell_str = f"{Fore.YELLOW}{cell_pad}{Style.RESET_ALL}"
         else:
-            cell_str = f"{Fore.RED}{'—':<14}{Style.RESET_ALL}"
+            cell_str = f"{Fore.RED}{'—':<{wc}}{Style.RESET_ALL}"
 
-        print(f"{i:<4} {cell_str} {product_name:<46} {qty:>7.0f}")
+        print(
+            f"{num:>{wn}}{sep}"
+            f"{cell_str}{sep}"
+            f"{name[:wna]:<{wna}}{sep}"
+            f"{qty:>{wq}.0f}"
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
