@@ -24,7 +24,7 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 BASE_URL = "https://api.moysklad.ru/api/remap/1.2"
 
