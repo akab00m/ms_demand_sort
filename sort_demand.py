@@ -28,7 +28,7 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-__version__ = "1.0.2"
+__version__ = "1.1.1"
 
 BASE_URL = "https://api.moysklad.ru/api/remap/1.2"
 
@@ -626,7 +626,7 @@ def save_xlsx(sorted_positions: list[dict], demand_name: str) -> pathlib.Path:
     """
     Сохранить отсортированные позиции в xlsx.
 
-    Колонки: Артикул, Code128, EAN13, Кол-во, Ячейка
+    Колонки: A=Артикул, B=EAN13, C=Кол-во, D=Ячейка, E=№ Коробки (пустая)
     Позиции НЕ суммируются — каждая строка == одна позиция.
     """
     _OUTPUT_DIR.mkdir(exist_ok=True)
@@ -637,8 +637,8 @@ def save_xlsx(sorted_positions: list[dict], demand_name: str) -> pathlib.Path:
     ws = wb.active
     ws.title = "Позиции"
 
-    # Заголовок
-    headers = ["Артикул", "Code128", "EAN13", "Кол-во", "Ячейка"]
+    # Заголовки
+    headers = ["Артикул", "EAN13", "Кол-во", "Ячейка", "№ Коробки"]
     header_fill = openpyxl.styles.PatternFill("solid", fgColor="1F4E79")
     header_font = openpyxl.styles.Font(color="FFFFFF", bold=True)
     header_align = openpyxl.styles.Alignment(horizontal="center", vertical="center")
@@ -651,19 +651,36 @@ def save_xlsx(sorted_positions: list[dict], demand_name: str) -> pathlib.Path:
 
     ws.row_dimensions[1].height = 18
 
+    # Стили данных
+    left_align = openpyxl.styles.Alignment(horizontal="left", vertical="center")
+    center_align = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+    box_font = openpyxl.styles.Font(size=20)
+    # Фиксированная высота — не даём Excel расширять строки под шрифт 20pt
+    DATA_ROW_HEIGHT = 15.0
+
     # Строки — одна позиция == одна строка
     for row_idx, pos in enumerate(sorted_positions, 2):
         assortment = pos.get("assortment") or {}
         code = assortment.get("code", "")
-        code128, ean13 = _extract_barcodes(assortment)
+        _, ean13 = _extract_barcodes(assortment)
         qty = pos.get("quantity", 0)
         cell_name = pos.get("_cell", "")
 
-        ws.cell(row=row_idx, column=1, value=code)
-        ws.cell(row=row_idx, column=2, value=code128)
-        ws.cell(row=row_idx, column=3, value=ean13)
-        ws.cell(row=row_idx, column=4, value=int(qty) if float(qty) == int(qty) else qty)
-        ws.cell(row=row_idx, column=5, value=cell_name)
+        ws.cell(row=row_idx, column=1, value=code)                                   # A: Артикул
+        ws.cell(row=row_idx, column=2, value=ean13)                                  # B: EAN13
+
+        qty_cell = ws.cell(row=row_idx, column=3,                                    # C: Кол-во
+                           value=int(qty) if float(qty) == int(qty) else qty)
+        qty_cell.alignment = left_align
+
+        cell_cell = ws.cell(row=row_idx, column=4, value=cell_name)                  # D: Ячейка
+        cell_cell.alignment = left_align
+
+        box_cell = ws.cell(row=row_idx, column=5, value="")                          # E: № Коробки (пустая)
+        box_cell.alignment = center_align
+        box_cell.font = box_font
+
+        ws.row_dimensions[row_idx].height = DATA_ROW_HEIGHT
 
     # автоширина колонок — по максимуму контента в каждом столбце
     col_letters = ["A", "B", "C", "D", "E"]
@@ -673,7 +690,7 @@ def save_xlsx(sorted_positions: list[dict], demand_name: str) -> pathlib.Path:
             for cell in row:
                 if cell.value is not None:
                     max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[letter].width = max_len + 3  # +3 отступ
+        ws.column_dimensions[letter].width = max(max_len + 3, 12)  # минимум 12
 
     wb.save(out_path)
     return out_path
