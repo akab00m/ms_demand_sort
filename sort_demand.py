@@ -771,9 +771,12 @@ def main(config: AppConfig) -> None:  # noqa: D401
     if config.apply:
         confirm = "y"
     else:
-        confirm = input(
-            f"\n{Fore.YELLOW}Сохранить порядок в МойСклад? [y/N]: {Style.RESET_ALL}"
-        ).strip().lower()
+        try:
+            confirm = input(
+                f"\n{Fore.YELLOW}Сохранить порядок в МойСклад? [y/N]: {Style.RESET_ALL}"
+            ).strip().lower()
+        except EOFError:
+            confirm = "n"
 
     if confirm == "y":
         # Снапшот ДО сохранения
@@ -801,6 +804,13 @@ def main(config: AppConfig) -> None:  # noqa: D401
             )
     else:
         print("Отменено.")
+
+    # Пауза перед выходом — только в интерактивном режиме
+    if not config.apply:
+        try:
+            input(f"\n{Fore.CYAN}Нажмите Enter для выхода…{Style.RESET_ALL}")
+        except EOFError:
+            pass
 
 
 if __name__ == "__main__":
