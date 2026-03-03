@@ -665,11 +665,15 @@ def save_xlsx(sorted_positions: list[dict], demand_name: str) -> pathlib.Path:
         ws.cell(row=row_idx, column=4, value=int(qty) if float(qty) == int(qty) else qty)
         ws.cell(row=row_idx, column=5, value=cell_name)
 
-    # автоширина колонок
-    col_widths = [14, 20, 16, 8, 14]
+    # автоширина колонок — по максимуму контента в каждом столбце
     col_letters = ["A", "B", "C", "D", "E"]
-    for letter, width in zip(col_letters, col_widths):
-        ws.column_dimensions[letter].width = width
+    for col_idx, letter in enumerate(col_letters, 1):
+        max_len = 0
+        for row in ws.iter_rows(min_col=col_idx, max_col=col_idx):
+            for cell in row:
+                if cell.value is not None:
+                    max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[letter].width = max_len + 3  # +3 отступ
 
     wb.save(out_path)
     return out_path
