@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 
+import qrcode as _qrcode
 import keyring
 import openpyxl
 import openpyxl.styles
@@ -29,7 +30,7 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 BASE_URL = "https://api.moysklad.ru/api/remap/1.2"
 
@@ -820,6 +821,25 @@ def restore_demand_from_backup(
     print(" ✓")
 
 
+# ── QR Terminal ──────────────────────────────────────────────────────────────
+
+
+def print_qr_terminal(demand_name: str) -> None:
+    """Вывести QR-код с номером отгрузки прямо в терминал для сканирования на ТСД."""
+    qr = _qrcode.QRCode(
+        version=None,
+        error_correction=_qrcode.constants.ERROR_CORRECT_M,
+        box_size=1,
+        border=2,
+    )
+    qr.add_data(demand_name)
+    qr.make(fit=True)
+    print(f"\n{Fore.CYAN}╔══ QR-код отгрузки {'═' * max(0, 40 - len(demand_name))}╗{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}║{Style.RESET_ALL}  {Fore.WHITE}{demand_name}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}╚{'═' * 42}╝{Style.RESET_ALL}")
+    qr.print_ascii(invert=True)
+
+
 # ── Display ───────────────────────────────────────────────────────────────────
 
 
@@ -1057,6 +1077,10 @@ def main(config: AppConfig) -> None:  # noqa: D401
     if action in (2, 3):
         xlsx_path = save_xlsx(sorted_positions, demand_name)
         print(f"{Fore.GREEN}✓ Сохранено: {xlsx_path}{Style.RESET_ALL}")
+
+    # QR — для всех действий, создающих/обновляющих документ (1, 2, 3)
+    if action in (1, 2, 3):
+        print_qr_terminal(demand_name)
 
     # Восстановить из бэкапа
     if action == 9:
