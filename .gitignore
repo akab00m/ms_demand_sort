@@ -26,6 +26,8 @@ Thumbs.db
 # Проект
 sort_demand.backup_*.py
 *.backup_*.py
+output/
+
 
 # Секреты — никогда не коммитим
 .env
