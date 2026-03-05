@@ -14,6 +14,7 @@ import collections
 import dataclasses
 import datetime
 import pathlib
+import json
 import re
 import sys
 import threading
@@ -28,7 +29,7 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 BASE_URL = "https://api.moysklad.ru/api/remap/1.2"
 
@@ -601,6 +602,7 @@ def _print_verify(before: dict, after: dict) -> bool:
 # ── XLSX Export ───────────────────────────────────────────────────
 
 _OUTPUT_DIR = pathlib.Path("output")
+_BACKUPS_DIR = _OUTPUT_DIR / "backups"
 
 
 def _sanitize_filename(name: str) -> str:
@@ -694,6 +696,128 @@ def save_xlsx(sorted_positions: list[dict], demand_name: str) -> pathlib.Path:
 
     wb.save(out_path)
     return out_path
+
+
+# ── Backup ───────────────────────────────────────────────────────────────────
+
+
+def save_backup(
+    positions: list[dict],
+    demand_id: str,
+    demand_name: str,
+) -> pathlib.Path:
+    """Сохранить бэкап позиций отгрузки.
+
+    Формат файла:
+      строка 1  — название документа (для человека)
+      строки 2+ — JSON-данные позиций
+    """
+    backup_dir = _BACKUPS_DIR / demand_id
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = _sanitize_filename(demand_name)
+    out_path = backup_dir / f"{ts}_{safe_name}.json"
+
+    payload: list[dict] = []
+    for pos in positions:
+        assortment_meta = (pos.get("assortment") or {}).get("meta")
+        if not assortment_meta:
+            print(
+                f"{Fore.YELLOW}[WARN] save_backup: пропущена позиция без meta ассортимента.{Style.RESET_ALL}"
+            )
+            continue
+        entry: dict = {
+            "assortment": {"meta": assortment_meta},
+            "quantity": pos["quantity"],
+            "price": pos.get("price", 0),
+        }
+        for field in (
+            "discount", "vat", "vatEnabled",
+            "overhead", "cost", "trackingCodes",
+            "things", "gtd", "country",
+        ):
+            val = pos.get(field)
+            if val is not None:
+                entry[field] = val
+        slot = pos.get("slot")
+        if slot and isinstance(slot, dict) and slot.get("meta"):
+            entry["slot"] = {"meta": slot["meta"]}
+        payload.append(entry)
+
+    with out_path.open("w", encoding="utf-8") as f:
+        f.write(demand_name + "\n")
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    return out_path
+
+
+def list_backups(demand_id: str) -> list[dict]:
+    """Вернуть список бэкапов для конкретной отгрузки (новые — первыми).
+
+    Каждый элемент: {demand_name, file, ts_display}.
+    """
+    backup_dir = _BACKUPS_DIR / demand_id
+    if not backup_dir.exists():
+        return []
+
+    backups: list[dict] = []
+    for bfile in sorted(backup_dir.glob("*.json"), reverse=True):
+        try:
+            with bfile.open("r", encoding="utf-8") as f:
+                demand_name = f.readline().rstrip("\n")
+        except OSError:
+            demand_name = "?"
+        # Имя файла: 20260305_142310_ОТ-12345.json → показываем дату+время
+        parts = bfile.stem.split("_", 2)
+        ts_display = f"{parts[0][:4]}-{parts[0][4:6]}-{parts[0][6:]} {parts[1][:2]}:{parts[1][2:4]}:{parts[1][4:]}" if len(parts) >= 2 else bfile.stem
+        backups.append({"demand_name": demand_name, "file": bfile, "ts_display": ts_display})
+    return backups
+
+
+def load_backup(bfile: "pathlib.Path") -> list[dict]:
+    """Прочитать бэкап: пропустить первую строку (имя), остальное — JSON."""
+    with bfile.open("r", encoding="utf-8") as f:
+        f.readline()  # строка с именем документа
+        return json.load(f)
+
+
+def restore_demand_from_backup(
+    client: "MoySkladClient",
+    demand_id: str,
+    backup_positions: list[dict],
+) -> None:
+    """Восстановить позиции отгрузки из бэкапа.
+
+    1. Получить текущие позиции (для batch-DELETE)
+    2. Удалить все текущие позиции
+    3. Создать позиции из бэкапа в исходном порядке
+    """
+    print("  Получение текущих позиций…", end="", flush=True)
+    demand_data = client.get(f"/entity/demand/{demand_id}")
+    positions_href = demand_data.get("positions", {}).get("meta", {}).get("href", "")
+
+    current_positions: list[dict] = []
+    if positions_href:
+        offset, limit = 0, 100
+        while True:
+            data = client.get_by_href(positions_href, params={"limit": limit, "offset": offset})
+            page = data.get("rows", []) if isinstance(data, dict) else data
+            current_positions.extend(page)
+            if len(page) < limit:
+                break
+            offset += limit
+    print(f" {len(current_positions)} шт.")
+
+    if current_positions:
+        delete_payload = [{"meta": p["meta"]} for p in current_positions]
+        print(f"  Удаление {len(current_positions)} позиций…", end="", flush=True)
+        client.post(f"/entity/demand/{demand_id}/positions/delete", delete_payload)
+        print(" ✓")
+
+    print(f"  Восстановление {len(backup_positions)} позиций из бэкапа…", end="", flush=True)
+    client.post(f"/entity/demand/{demand_id}/positions", backup_positions)
+    print(" ✓")
 
 
 # ── Display ───────────────────────────────────────────────────────────────────
@@ -873,29 +997,43 @@ def main(config: AppConfig) -> None:  # noqa: D401
     if config.apply:
         action = 2
     else:
+        available_backups = list_backups(demand_id)
+        restore_line = (
+            f"  {Fore.WHITE}9{Style.RESET_ALL} — восстановить из бэкапа"
+            f" {Fore.YELLOW}({len(available_backups)} доступно){Style.RESET_ALL}\n"
+            if available_backups else ""
+        )
+        valid_actions = {0, 1, 2, 3} | ({9} if available_backups else set())
+        range_hint = "0–3/9" if available_backups else "0–3"
         print(
             f"\n{Fore.CYAN}Выберите действие:{Style.RESET_ALL}\n"
             f"  {Fore.WHITE}1{Style.RESET_ALL} — применить сортировку в МойСклад\n"
             f"  {Fore.WHITE}2{Style.RESET_ALL} — применить сортировку + сохранить xlsx\n"
             f"  {Fore.WHITE}3{Style.RESET_ALL} — только сохранить xlsx (без изменений в МойСклад)\n"
+            f"{restore_line}"
             f"  {Fore.WHITE}0{Style.RESET_ALL} — отмена"
         )
         action = 0
         while True:
             try:
                 raw = input(
-                    f"{Fore.YELLOW}Ваш выбор [0–3]: {Style.RESET_ALL}"
+                    f"{Fore.YELLOW}Ваш выбор [{range_hint}]: {Style.RESET_ALL}"
                 ).strip()
                 action = int(raw)
             except (ValueError, EOFError):
-                print(f"{Fore.RED}Введите 0, 1, 2 или 3.{Style.RESET_ALL}")
+                print(f"{Fore.RED}Введите корректный номер.{Style.RESET_ALL}")
                 continue
-            if action in (0, 1, 2, 3):
+            if action in valid_actions:
                 break
-            print(f"{Fore.RED}Введите 0, 1, 2 или 3.{Style.RESET_ALL}")
+            print(f"{Fore.RED}Недопустимый выбор.{Style.RESET_ALL}")
 
     if action == 0:
         print("Отменено.")
+
+    # Бэкап — сразу после выбора действия, до любой обработки
+    if action in (1, 2, 3):
+        backup_path = save_backup(sorted_positions, demand_id, demand_name)
+        print(f"{Fore.GREEN}✓ Бэкап сохранён: {backup_path}{Style.RESET_ALL}")
 
     # Применить сортировку в МойСклад
     if action in (1, 2):
@@ -919,6 +1057,40 @@ def main(config: AppConfig) -> None:  # noqa: D401
     if action in (2, 3):
         xlsx_path = save_xlsx(sorted_positions, demand_name)
         print(f"{Fore.GREEN}✓ Сохранено: {xlsx_path}{Style.RESET_ALL}")
+
+    # Восстановить из бэкапа
+    if action == 9:
+        backups = list_backups(demand_id)
+        print(f"\n{Fore.CYAN}Доступные бэкапы для «{demand_name}»:{Style.RESET_ALL}")
+        for i, b in enumerate(backups, 1):
+            print(
+                f"  {Fore.WHITE}{i}{Style.RESET_ALL}"
+                f" — {Fore.YELLOW}{b['ts_display']}{Style.RESET_ALL}"
+                f"  {b['file'].name}"
+            )
+        while True:
+            try:
+                raw = input(
+                    f"{Fore.YELLOW}Выберите бэкап [1–{len(backups)}] (0 — отмена): {Style.RESET_ALL}"
+                ).strip()
+                num = int(raw)
+            except (ValueError, EOFError):
+                print(f"{Fore.RED}Введите целое число.{Style.RESET_ALL}")
+                continue
+            if num == 0:
+                print("Отменено.")
+                break
+            if 1 <= num <= len(backups):
+                chosen = backups[num - 1]
+                backup_positions = load_backup(chosen["file"])
+                print(
+                    f"\nВосстановление «{demand_name}» "
+                    f"из бэкапа {chosen['ts_display']}…"
+                )
+                restore_demand_from_backup(client, demand_id, backup_positions)
+                print(f"{Fore.GREEN}✓ Отгрузка восстановлена.{Style.RESET_ALL}")
+                break
+            print(f"{Fore.RED}Введите число от 1 до {len(backups)}.{Style.RESET_ALL}")
 
     # Пауза перед выходом — только в интерактивном режиме
     if not config.apply:
