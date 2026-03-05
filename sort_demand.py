@@ -1,4 +1,4 @@
-"""Сортировка товаров в отгрузке МойСклад по ячейкам склада.
+﻿"""Сортировка товаров в отгрузке МойСклад по ячейкам склада.
 
 Использование:
     python sort_demand.py                          # стандартный запуск
@@ -33,6 +33,12 @@ init(autoreset=True)
 __version__ = "1.3.0"
 
 BASE_URL = "https://api.moysklad.ru/api/remap/1.2"
+
+# Фразы в комментарии, сигнализирующие что документ уже обработан ТСД Клеверенс
+_CLEVERENCE_MARKERS = (
+    "document has been picked on the cleverence handheld terminal",
+    "документ отобран на тсд клеверенс",
+)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -187,6 +193,9 @@ class MoySkladClient:
     def post(self, path: str, payload: dict | list) -> dict | list:
         return self._request("POST", f"{BASE_URL}{path}", json=payload)
 
+    def put(self, path: str, payload: dict) -> dict:
+        return self._request("PUT", f"{BASE_URL}{path}", json=payload)
+
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -220,12 +229,29 @@ def find_state_href(client: MoySkladClient, state_name: str) -> str:
     return ""  # unreachable
 
 
+def change_demand_state(client: MoySkladClient, demand_id: str, state_href: str) -> None:
+    """Сменить статус отгрузки по UUID."""
+    client.put(
+        f"/entity/demand/{demand_id}",
+        {"state": {"meta": {"href": state_href, "type": "state", "mediaType": "application/json"}}},
+    )
+
+
+def _is_cleverence_processed(demand: dict) -> bool:
+    """True если в комментарии отгрузки есть маркер Клеверенс (обработан на ТСД)."""
+    description: str = (demand.get("description") or "").lower()
+    return any(marker in description for marker in _CLEVERENCE_MARKERS)
+
+
 def fetch_demands(
     client: MoySkladClient,
     since: datetime.datetime,
     state_href: str,
 ) -> list[dict]:
-    """Получить отгрузки за период с нужным статусом (все страницы)."""
+    """Получить отгрузки за период с нужным статусом (все страницы).
+
+    Документы с маркером Клеверенс в комментарии автоматически исключаются.
+    """
     moment_str = since.strftime("%Y-%m-%d %H:%M:%S")
     rows: list[dict] = []
     offset = 0
@@ -248,7 +274,14 @@ def fetch_demands(
             break
         offset += limit
 
-    return rows
+    # Фильтр: исключаем документы уже обработанные ТСД Клеверенс
+    filtered = [d for d in rows if not _is_cleverence_processed(d)]
+    skipped = len(rows) - len(filtered)
+    if skipped:
+        print(
+            f"{Fore.YELLOW}⚠ Пропущено {skipped} док. с маркером Клеверенс (уже обработаны на ТСД).{Style.RESET_ALL}"
+        )
+    return filtered
 
 
 def fetch_positions(
@@ -834,9 +867,17 @@ def print_qr_terminal(demand_name: str) -> None:
     )
     qr.add_data(demand_name)
     qr.make(fit=True)
-    print(f"\n{Fore.CYAN}╔══ QR-код отгрузки {'═' * max(0, 40 - len(demand_name))}╗{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}║{Style.RESET_ALL}  {Fore.WHITE}{demand_name}{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}╚{'═' * 42}╝{Style.RESET_ALL}")
+
+    label = "QR-код отгрузки"
+    # inner — ширина содержимого между ╔ и ╗, динамически под имя отгрузки
+    inner = max(len(label) + 4, len(demand_name) + 4, 30)
+    top    = f"╔═ {label} {'═' * (inner - len(label) - 3)}╗"
+    middle = f"║ {demand_name:<{inner - 1}}║"
+    bottom = f"╚{'═' * inner}╝"
+
+    print(f"\n{Fore.CYAN}{top}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{middle}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{bottom}{Style.RESET_ALL}")
     qr.print_ascii(invert=True)
 
 
@@ -1116,12 +1157,53 @@ def main(config: AppConfig) -> None:  # noqa: D401
                 break
             print(f"{Fore.RED}Введите число от 1 до {len(backups)}.{Style.RESET_ALL}")
 
-    # Пауза перед выходом — только в интерактивном режиме
-    if not config.apply:
-        try:
-            input(f"\n{Fore.CYAN}Нажмите Enter для выхода…{Style.RESET_ALL}")
-        except EOFError:
-            pass
+    # Меню смены статуса перед выходом
+    if not config.apply and action in (1, 2, 3):
+        assembled_href = find_state_href(client, "Собран")
+        assembly_href = find_state_href(client, config.state_name)
+
+        while True:
+            print(
+                f"\n{Fore.CYAN}Выберите действие:{Style.RESET_ALL}\n"
+                f"  {Fore.WHITE}1{Style.RESET_ALL} — сменить статус на {Fore.GREEN}'Собран'{Style.RESET_ALL}\n"
+                f"  {Fore.WHITE}0{Style.RESET_ALL} — выход"
+            )
+            try:
+                raw = input(f"{Fore.YELLOW}Ваш выбор [0–1]: {Style.RESET_ALL}").strip()
+                choice = int(raw)
+            except (ValueError, EOFError):
+                print(f"{Fore.RED}Введите 0 или 1.{Style.RESET_ALL}")
+                continue
+
+            if choice == 0:
+                break
+            if choice == 1:
+                print(f"Обновляю статус «{demand_name}» → Собран…", end="", flush=True)
+                change_demand_state(client, demand_id, assembled_href)
+                print(f" {Fore.GREEN}✓{Style.RESET_ALL}")
+
+                # После успешной смены — предложить откат назад
+                while True:
+                    print(
+                        f"\n{Fore.CYAN}Выберите действие:{Style.RESET_ALL}\n"
+                        f"  {Fore.WHITE}1{Style.RESET_ALL} — вернуть статус на {Fore.YELLOW}'{config.state_name}'{Style.RESET_ALL}\n"
+                        f"  {Fore.WHITE}0{Style.RESET_ALL} — выход"
+                    )
+                    try:
+                        raw2 = input(f"{Fore.YELLOW}Ваш выбор [0–1]: {Style.RESET_ALL}").strip()
+                        choice2 = int(raw2)
+                    except (ValueError, EOFError):
+                        print(f"{Fore.RED}Введите 0 или 1.{Style.RESET_ALL}")
+                        continue
+                    if choice2 == 0:
+                        break
+                    if choice2 == 1:
+                        print(f"Возвращаю статус «{demand_name}» → {config.state_name}…", end="", flush=True)
+                        change_demand_state(client, demand_id, assembly_href)
+                        print(f" {Fore.GREEN}✓{Style.RESET_ALL}")
+                        break
+                break  # выход из внешнего цикла
+            print(f"{Fore.RED}Недопустимый выбор.{Style.RESET_ALL}")
 
 
 if __name__ == "__main__":
